@@ -1,8 +1,10 @@
 """Command-line interface for Stellar Agent."""
+from datetime import datetime
 from .client import StellarClient
 from .history import TransactionHistory
 from .config import config
 from .utils.validators import is_valid_stellar_address, is_valid_amount
+from .scheduled_payments import ScheduledPaymentManager, RECURRENCE_OPTIONS, STATUS_PENDING
 
 def show_history():
     """Interactive CLI for viewing Stellar transaction history."""
@@ -116,10 +118,128 @@ def prompt_and_send():
             print(f"❌ Unexpected error: {e}")
             print("💡 Please check your network connectivity and configuration.")
 
+def schedule_payment():
+    """Interactive CLI for scheduling a future Stellar payment."""
+    manager = ScheduledPaymentManager()
+
+    destination = input("Enter destination public key: ").strip()
+    if not is_valid_stellar_address(destination):
+        print("❌ Invalid Stellar address.")
+        return
+
+    amount_str = input("Enter amount to send (in XLM): ").strip()
+    try:
+        amount = float(amount_str)
+        if not is_valid_amount(amount):
+            print("❌ Amount must be positive.")
+            return
+    except ValueError:
+        print("❌ Invalid amount.")
+        return
+
+    date_str = input("Enter scheduled date/time (YYYY-MM-DD HH:MM, UTC): ").strip()
+    try:
+        scheduled_time = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+    except ValueError:
+        print("❌ Invalid date format. Use YYYY-MM-DD HH:MM.")
+        return
+
+    print(f"Recurrence options: {', '.join(RECURRENCE_OPTIONS)}")
+    recurrence = input("Recurrence [default: none]: ").strip().lower() or "none"
+    if recurrence not in RECURRENCE_OPTIONS:
+        print(f"❌ Invalid recurrence. Choose from: {RECURRENCE_OPTIONS}")
+        return
+
+    memo = input("Memo (optional, max 28 chars): ").strip()
+
+    try:
+        payment = manager.schedule(
+            destination=destination,
+            amount=amount,
+            scheduled_time=scheduled_time,
+            recurrence=recurrence,
+            memo=memo,
+        )
+        print(f"\n✅ Payment scheduled successfully!")
+        print(f"   ID        : {payment.id}")
+        print(f"   To        : {payment.destination}")
+        print(f"   Amount    : {payment.amount} XLM")
+        print(f"   At (UTC)  : {payment.scheduled_time.isoformat()}")
+        print(f"   Recurrence: {payment.recurrence}")
+        if payment.memo:
+            print(f"   Memo      : {payment.memo}")
+    except ValueError as e:
+        print(f"❌ {e}")
+
+
+def list_scheduled_payments():
+    """List all scheduled payments."""
+    manager = ScheduledPaymentManager()
+    payments = manager.list_payments()
+
+    if not payments:
+        print("ℹ️  No scheduled payments found.")
+        return
+
+    print(f"\n{'ID':10} {'Status':12} {'Scheduled (UTC)':20} {'Amount':10} {'Recurrence':10} {'Destination'}")
+    print("-" * 110)
+    for p in payments:
+        print(
+            f"{p.id[:8]:<10} {p.status:<12} {p.scheduled_time.strftime('%Y-%m-%d %H:%M'):<20} "
+            f"{p.amount:<10} {p.recurrence:<10} {p.destination}"
+        )
+
+
+def cancel_scheduled_payment():
+    """Cancel a pending scheduled payment by ID."""
+    manager = ScheduledPaymentManager()
+    payment_id = input("Enter payment ID (or prefix) to cancel: ").strip()
+    try:
+        payment = manager.cancel(payment_id)
+        print(f"✅ Payment {payment.id[:8]}… cancelled.")
+    except (KeyError, RuntimeError) as e:
+        print(f"❌ {e}")
+
+
+def execute_due_payments():
+    """Execute all pending payments that are now due."""
+    try:
+        config.validate()
+    except ValueError as e:
+        print(f"❌ Configuration Error: {e}")
+        return
+
+    manager = ScheduledPaymentManager()
+    print("Executing due payments…")
+    try:
+        results = manager.execute_due(source_secret=config.source_secret)
+    except RuntimeError as e:
+        print(f"❌ {e}")
+        return
+
+    if not results:
+        print("ℹ️  No payments were due.")
+        return
+
+    for r in results:
+        if r["status"] == "executed":
+            print(f"✅ Payment {r['payment_id'][:8]}… executed. Hash: {r.get('hash', 'N/A')}")
+        else:
+            print(f"❌ Payment {r['payment_id'][:8]}… FAILED: {r.get('error')}")
+
+
 def run():
     """Entry point for the CLI."""
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "history":
         show_history()
+    elif len(sys.argv) > 1 and sys.argv[1] == "schedule":
+        schedule_payment()
+    elif len(sys.argv) > 1 and sys.argv[1] == "list-scheduled":
+        list_scheduled_payments()
+    elif len(sys.argv) > 1 and sys.argv[1] == "cancel-scheduled":
+        cancel_scheduled_payment()
+    elif len(sys.argv) > 1 and sys.argv[1] == "execute-due":
+        execute_due_payments()
     else:
         prompt_and_send()
