@@ -1,7 +1,51 @@
 """Command-line interface for Stellar Agent."""
 from .client import StellarClient
+from .history import TransactionHistory
 from .config import config
 from .utils.validators import is_valid_stellar_address, is_valid_amount
+
+def show_history():
+    """Interactive CLI for viewing Stellar transaction history."""
+    history = TransactionHistory()
+
+    account_id = input("Enter account public key to view history: ").strip()
+    if not is_valid_stellar_address(account_id):
+        print("❌ Invalid Stellar address. Must start with 'G' and be 56 characters long.")
+        return
+
+    limit_str = input("How many transactions to show? [default: 10]: ").strip()
+    try:
+        limit = int(limit_str) if limit_str else 10
+        if limit < 1:
+            raise ValueError
+    except ValueError:
+        print("❌ Invalid number. Using default of 10.")
+        limit = 10
+
+    print(f"\nFetching last {limit} transaction(s) for {account_id[:8]}…\n")
+    try:
+        result = history.get_formatted_history(account_id, limit=limit)
+    except RuntimeError as e:
+        print(f"❌ {e}")
+        return
+
+    if result["count"] == 0:
+        print("ℹ️  No payment history found for this account.")
+        return
+
+    print(f"{'#':<4} {'Date':<20} {'Dir':<10} {'Amount':<16} {'Asset':<12} {'Counterpart':<58} {'Tx Hash'}")
+    print("-" * 140)
+    for i, p in enumerate(result["payments"], start=1):
+        direction_icon = "⬇ IN " if p["direction"] == "RECEIVED" else "⬆ OUT"
+        print(
+            f"{i:<4} {p['created_at']:<20} {direction_icon:<10} "
+            f"{p['amount']:<16} {p['asset']:<12} "
+            f"{p['counterpart']:<58} {p['transaction_hash']}"
+        )
+
+    if result["next_cursor"]:
+        print(f"\n💡 Next cursor for pagination: {result['next_cursor']}")
+
 
 def prompt_and_send():
     """Interactive CLI for sending Stellar payments."""
@@ -17,10 +61,15 @@ def prompt_and_send():
     
     while True:
         print("\n--- Stellar Agent ---")
-        destination = input("Enter destination public key (or type 'exit' to quit): ").strip()
-        
+        print("Commands: send | history | exit")
+        destination = input("Enter destination public key (or 'history' / 'exit'): ").strip()
+
         if destination.lower() == "exit":
             break
+
+        if destination.lower() == "history":
+            show_history()
+            continue
         
         # Validate destination address
         if not is_valid_stellar_address(destination):
@@ -69,4 +118,8 @@ def prompt_and_send():
 
 def run():
     """Entry point for the CLI."""
-    prompt_and_send()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "history":
+        show_history()
+    else:
+        prompt_and_send()
